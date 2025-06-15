@@ -15,6 +15,7 @@ from kivy.lang import Builder
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
+from kivy.storage.jsonstore import JsonStore
 
 # --- App Data (This is now the app's permanent offline database) ---
 
@@ -42,6 +43,20 @@ WEEKLY_SCHEDULE = [
     { 'day': 'Monday', 'type': 'Full Body A' }, { 'day': 'Tuesday', 'type': 'Cardio' }, { 'day': 'Wednesday', 'type': 'Rest' }, { 'day': 'Thursday', 'type': 'Cardio' }, { 'day': 'Friday', 'type': 'Full Body B' }, { 'day': 'Saturday', 'type': 'Cardio' }, { 'day': 'Sunday', 'type': 'Rest' }
 ]
 
+ACHIEVEMENT_LIST = {
+    'Consistency': [
+        { 'id': 'c1', 'title': 'First Workout!', 'description': 'Complete your first activity.'},
+        { 'id': 'c2', 'title': 'One Week Strong', 'description': 'Complete a full week of planned workouts.'},
+        { 'id': 'c3', 'title': '30-Day Hustle', 'description': 'Complete 30 workouts.'},
+    ],
+    'Weight Loss': [
+        { 'id': 'w1', 'title': 'On the Board', 'description': 'Lose your first 10 lbs.'},
+        { 'id': 'w2', 'title': '25 Down', 'description': 'Lose a total of 25 lbs.'},
+        { 'id': 'w3', 'title': 'Halfway There!', 'description': 'Lose 35 lbs, halfway to your goal.'},
+    ]
+}
+
+
 # --- Helper Functions ---
 def get_today_string():
     return datetime.now().strftime("%Y-%m-%d")
@@ -68,6 +83,8 @@ KIVY_LAYOUT_STRING = """
                 name: 'workout'
             NutritionScreen:
                 name: 'nutrition'
+            AwardsScreen:
+                name: 'awards'
             SettingsScreen:
                 name: 'settings'
         BoxLayout:
@@ -88,6 +105,9 @@ KIVY_LAYOUT_STRING = """
             Button:
                 text: 'Nutrition'
                 on_release: app.root.ids.sm.current = 'nutrition'
+            Button:
+                text: 'Awards'
+                on_release: app.root.ids.sm.current = 'awards'
             Button:
                 text: 'Settings'
                 on_release: app.root.ids.sm.current = 'settings'
@@ -177,6 +197,16 @@ KIVY_LAYOUT_STRING = """
                 height: self.minimum_height
                 spacing: dp(5)
 
+<AwardsScreen>:
+    ScrollView:
+        GridLayout:
+            cols: 1
+            padding: dp(10)
+            spacing: dp(10)
+            size_hint_y: None
+            height: self.minimum_height
+            id: awards_grid
+
 <SettingsScreen>:
     BoxLayout:
         orientation: 'vertical'
@@ -221,40 +251,42 @@ Builder.load_string(KIVY_LAYOUT_STRING)
 
 # --- Screen Class Definitions ---
 
-class MainScreen(BoxLayout):
-    pass
-
+class MainScreen(BoxLayout): pass
 class DashboardScreen(Screen):
-    def on_enter(self, *args):
-        App.get_running_app().update_dashboard()
-
+    def on_enter(self, *args): App.get_running_app().update_dashboard()
 class WorkoutScreen(Screen):
-    def on_enter(self, *args):
-        App.get_running_app().update_workout_plan()
-
+    def on_enter(self, *args): App.get_running_app().update_workout_plan()
 class NutritionScreen(Screen):
-    def on_enter(self, *args):
-        App.get_running_app().update_meal_list()
-
-class SettingsScreen(Screen):
-    pass
-
-class WorkoutPopup(ModalView):
-    pass
+    def on_enter(self, *args): App.get_running_app().update_meal_list()
+class AwardsScreen(Screen):
+    def on_enter(self, *args): App.get_running_app().update_awards_screen()
+class SettingsScreen(Screen): pass
+class WorkoutPopup(ModalView): pass
 
 # --- The Main Application Class ---
 
 class FitnessApp(App):
 
     def build(self):
-        # Offline data store
-        self.profile_data = {
-            'startDate': datetime.now() - timedelta(days=30),
-            'startWeight': 304,
-            'goalWeight': 235
-        }
-        self.meals_today = []
+        # Using Kivy's JsonStore for simple offline data persistence.
+        # This creates a file in the app's user data directory.
+        self.store = JsonStore('fitness_data.json')
         
+        # Initialize data if the store is empty
+        if not self.store.exists('profile'):
+            self.store.put('profile',
+                startDate=(datetime.now() - timedelta(days=30)).isoformat(),
+                startWeight=304,
+                goalWeight=235,
+                unlockedAchievements={}
+            )
+        if not self.store.exists('meals_today'):
+             self.store.put('meals_today', date=get_today_string(), meals=[])
+
+        # Check if stored meal data is for today, if not, reset it.
+        if self.store.get('meals_today')['date'] != get_today_string():
+            self.store.put('meals_today', date=get_today_string(), meals=[])
+
         Window.clearcolor = (0.15, 0.15, 0.15, 1)
         
         Clock.schedule_once(self.update_all_screens, 0)
@@ -264,6 +296,7 @@ class FitnessApp(App):
         self.update_dashboard()
         self.update_workout_plan()
         self.update_meal_list()
+        self.update_awards_screen()
 
     def create_info_card(self, title, value):
         card = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(100), padding=dp(10),
@@ -283,12 +316,15 @@ RoundedRectangle:
         grid = self.root.ids.sm.get_screen('dashboard').ids.dashboard_grid
         grid.clear_widgets()
 
-        current_week = get_week_number(self.profile_data.get('startDate'))
+        profile = self.store.get('profile')
+        start_date = datetime.fromisoformat(profile['startDate'])
+        current_week = get_week_number(start_date)
         plan_index = min(current_week // 4, len(MONTHLY_PLAN_DATA) - 1)
         plan = MONTHLY_PLAN_DATA[plan_index]
         
-        total_calories = sum(meal['calories'] for meal in self.meals_today)
-        total_protein = sum(meal['protein'] for meal in self.meals_today)
+        meals_data = self.store.get('meals_today')
+        total_calories = sum(meal['calories'] for meal in meals_data['meals'])
+        total_protein = sum(meal['protein'] for meal in meals_data['meals'])
 
         grid.add_widget(self.create_info_card("Current Week", current_week))
         grid.add_widget(self.create_info_card("Current Phase", plan['phase']))
@@ -303,19 +339,14 @@ RoundedRectangle:
         
         for day_info in WEEKLY_SCHEDULE:
             day_workout = WORKOUTS_DATA.get(day_info['type'], {})
-            
             day_card = BoxLayout(padding=dp(10), size_hint_y=None, height=dp(80))
-            
             info_layout = BoxLayout(orientation='vertical')
             info_layout.add_widget(Label(text=day_info['day'], font_size='18sp', bold=True, halign='left', text_size=(Window.width * 0.5, None)))
             info_layout.add_widget(Label(text=day_info['type'], color=(0.8, 0.8, 0.8, 1), halign='left', text_size=(Window.width * 0.5, None)))
-            
             day_card.add_widget(info_layout)
-            
             btn = Button(text='View', size_hint_x=0.3)
             btn.bind(on_release=lambda x, workout=day_workout: self.show_workout_popup(workout))
             day_card.add_widget(btn)
-
             grid.add_widget(day_card)
 
     def show_workout_popup(self, workout_info):
@@ -338,24 +369,19 @@ RoundedRectangle:
         calories = nutrition_screen.ids.calories_input.text
         protein = nutrition_screen.ids.protein_input.text
 
-        if not meal_name or not calories or not protein:
-            # Simple validation feedback
-            print("Please fill out all meal fields.")
-            return
+        if not meal_name or not calories or not protein: return
 
         try:
-            self.meals_today.append({
-                'name': meal_name,
-                'calories': int(calories),
-                'protein': int(protein)
+            meals_data = self.store.get('meals_today')
+            meals_data['meals'].append({
+                'name': meal_name, 'calories': int(calories), 'protein': int(protein)
             })
+            self.store.put('meals_today', date=meals_data['date'], meals=meals_data['meals'])
             
-            # Clear inputs
             nutrition_screen.ids.meal_name_input.text = ''
             nutrition_screen.ids.calories_input.text = ''
             nutrition_screen.ids.protein_input.text = ''
             
-            # Update UI
             self.update_meal_list()
             self.update_dashboard()
 
@@ -365,18 +391,32 @@ RoundedRectangle:
     def update_meal_list(self):
         meal_list_grid = self.root.ids.sm.get_screen('nutrition').ids.meal_list
         meal_list_grid.clear_widgets()
-
-        if not self.meals_today:
+        meals = self.store.get('meals_today')['meals']
+        
+        if not meals:
             meal_list_grid.add_widget(Label(text="No meals logged for today.", size_hint_y=None, height=dp(50)))
             return
 
-        for meal in self.meals_today:
-            meal_label = Label(
+        for meal in meals:
+            meal_list_grid.add_widget(Label(
                 text=f"{meal['name']}: {meal['calories']} kcal, {meal['protein']}g protein",
-                size_hint_y=None,
-                height=dp(40)
-            )
-            meal_list_grid.add_widget(meal_label)
+                size_hint_y=None, height=dp(40)
+            ))
+
+    def update_awards_screen(self):
+        grid = self.root.ids.sm.get_screen('awards').ids.awards_grid
+        grid.clear_widgets()
+        
+        unlocked = self.store.get('profile')['unlockedAchievements']
+
+        for category, achievements in ACHIEVEMENT_LIST.items():
+            grid.add_widget(Label(text=category, font_size='20sp', bold=True, size_hint_y=None, height=dp(40)))
+            for ach in achievements:
+                status = "Unlocked" if ach['id'] in unlocked else "Locked"
+                award_text = f"[b]{ach['title']}[/b] ({status})\\n{ach['description']}"
+                award_label = Label(text=award_text, markup=True, size_hint_y=None, height=dp(60))
+                grid.add_widget(award_label)
+
 
 if __name__ == '__main__':
     FitnessApp().run()
