@@ -15,7 +15,6 @@ from kivy.lang import Builder
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
-from kivy.storage.jsonstore import JsonStore
 
 # --- App Data (This is the app's permanent offline database) ---
 
@@ -63,12 +62,11 @@ def get_today_string():
 
 def get_week_number(start_date):
     if not start_date: return 1
-    # Handle both datetime objects and ISO format strings
     if isinstance(start_date, str):
         try:
             start_date = datetime.fromisoformat(start_date)
         except ValueError:
-            return 1 # Or handle error appropriately
+            return 1
             
     if start_date.tzinfo:
         start_date = start_date.replace(tzinfo=None)
@@ -232,9 +230,9 @@ KIVY_LAYOUT_STRING = """
             Label:
                 text: 'This is an offline version of the app.'
             Label:
-                text: 'User data is saved locally on this device.'
+                text: 'Logged meal data resets when the app closes.'
             Label:
-                text: 'Version 0.7'
+                text: 'Version 0.8'
 
 <WorkoutPopup>:
     title: "Workout Details"
@@ -278,23 +276,16 @@ class WorkoutPopup(ModalView): pass
 class FitnessApp(App):
 
     def build(self):
-        # Using Kivy's JsonStore for simple offline data persistence.
-        # This creates a file in the app's user data directory.
-        self.store = JsonStore(os.path.join(self.user_data_dir, 'fitness_data.json'))
+        # Using simple dictionaries for in-memory data storage.
+        # This will reset when the app closes, but prevents crashing.
+        self.data = {
+            'profile': {
+                'startDate': datetime.now() - timedelta(days=30),
+                'unlockedAchievements': {'c1': True, 'w1': True} # Example unlocked
+            },
+            'meals_today': []
+        }
         
-        # Initialize data if the store is empty
-        if not self.store.exists('profile'):
-            self.store.put('profile',
-                startDate=(datetime.now() - timedelta(days=30)).isoformat(),
-                startWeight=304,
-                goalWeight=235,
-                unlockedAchievements={}
-            )
-        
-        today = get_today_string()
-        if not self.store.exists(today):
-             self.store.put(today, meals=[])
-
         Window.clearcolor = (0.15, 0.15, 0.15, 1)
         
         Clock.schedule_once(self.update_all_screens, 0)
@@ -324,19 +315,13 @@ RoundedRectangle:
         grid = self.root.ids.sm.get_screen('dashboard').ids.dashboard_grid
         grid.clear_widgets()
 
-        profile = self.store.get('profile')
+        profile = self.data['profile']
         current_week = get_week_number(profile['startDate'])
         plan_index = min(current_week // 4, len(MONTHLY_PLAN_DATA) - 1)
         plan = MONTHLY_PLAN_DATA[plan_index]
         
-        today = get_today_string()
-        if self.store.exists(today):
-            meals_data = self.store.get(today)['meals']
-            total_calories = sum(meal['calories'] for meal in meals_data)
-            total_protein = sum(meal['protein'] for meal in meals_data)
-        else:
-            total_calories = 0
-            total_protein = 0
+        total_calories = sum(meal['calories'] for meal in self.data['meals_today'])
+        total_protein = sum(meal['protein'] for meal in self.data['meals_today'])
 
         grid.add_widget(self.create_info_card("Current Week", current_week))
         grid.add_widget(self.create_info_card("Current Phase", plan['phase']))
@@ -384,15 +369,9 @@ RoundedRectangle:
         if not meal_name or not calories or not protein: return
 
         try:
-            today = get_today_string()
-            if not self.store.exists(today):
-                self.store.put(today, meals=[])
-
-            meals_data = self.store.get(today)
-            meals_data['meals'].append({
+            self.data['meals_today'].append({
                 'name': meal_name, 'calories': int(calories), 'protein': int(protein)
             })
-            self.store.put(today, meals=meals_data['meals'])
             
             nutrition_screen.ids.meal_name_input.text = ''
             nutrition_screen.ids.calories_input.text = ''
@@ -407,12 +386,7 @@ RoundedRectangle:
     def update_meal_list(self):
         meal_list_grid = self.root.ids.sm.get_screen('nutrition').ids.meal_list
         meal_list_grid.clear_widgets()
-        
-        today = get_today_string()
-        if self.store.exists(today):
-            meals = self.store.get(today)['meals']
-        else:
-            meals = []
+        meals = self.data['meals_today']
         
         if not meals:
             meal_list_grid.add_widget(Label(text="No meals logged for today.", size_hint_y=None, height=dp(50)))
@@ -428,15 +402,14 @@ RoundedRectangle:
         grid = self.root.ids.sm.get_screen('awards').ids.awards_grid
         grid.clear_widgets()
         
-        profile = self.store.get('profile')
-        unlocked = profile.get('unlockedAchievements', {})
+        unlocked = self.data['profile']['unlockedAchievements']
 
         for category, achievements in ACHIEVEMENT_LIST.items():
             grid.add_widget(Label(text=category, font_size='20sp', bold=True, size_hint_y=None, height=dp(40)))
             for ach in achievements:
                 status = "Unlocked" if ach['id'] in unlocked else "Locked"
                 award_text = f"[b]{ach['title']}[/b] ({status})\\n{ach['description']}"
-                award_label = Label(text=award_text, markup=True, size_hint_y=None, height=dp(60))
+                award_label = Label(text=award_text, markup=True, size_hint_y=None, height=dp(60), text_size=(grid.width * 0.9, None))
                 grid.add_widget(award_label)
 
 
