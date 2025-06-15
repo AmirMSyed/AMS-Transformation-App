@@ -14,30 +14,25 @@ source.dir = .
 # (list) Source files to include (let empty to include all the files)
 source.include_exts = py,png,jpg,kv,atlas
 
-# (list) List of inclusions using pattern matching
-#source.include_patterns = assets/*,images/*.png
-
-# (list) Source files to exclude (let empty to not exclude anything)
-#source.exclude_exts = spec
-
-# (list) List of directory to exclude (let empty to not exclude anything)
-#source.exclude_dirs = tests, bin, venv
-
 # (str) Application versioning
-version = 0.1
+version = 0.3
 
 # (list) Application requirements
-# Comma-separated list of libraries your app needs.
-requirements = python3,kivy,firebase-admin
+# We only need kivy now, since we are offline.
+requirements = python3,kivy
 
-# (str) Supported orientation (one of landscape, sensorLandscape, portrait or all)
+# (str) Supported orientation
 orientation = portrait
 
 # (bool) Indicate if the application should be fullscreen or not
 fullscreen = 0
 
-# (list) The Android archs to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
+# (list) The Android archs to build for.
+# arm64-v8a is the modern standard for Android phones.
 android.archs = arm64-v8a
+
+# (list) Permissions
+android.permissions = INTERNET
 
 # (int) Target Android API, should be as high as possible.
 android.api = 33
