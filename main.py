@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta
 
 # Kivy UI Components
@@ -232,7 +231,7 @@ KIVY_LAYOUT_STRING = """
             Label:
                 text: 'Logged meal data resets when the app closes.'
             Label:
-                text: 'Version 0.8'
+                text: 'Version 0.9'
 
 <WorkoutPopup>:
     title: "Workout Details"
@@ -288,7 +287,9 @@ class FitnessApp(App):
         
         Window.clearcolor = (0.15, 0.15, 0.15, 1)
         
-        Clock.schedule_once(self.update_all_screens, 0)
+        # We don't do any file access here to prevent crashes.
+        # The UI will be populated once the app is running.
+        Clock.schedule_once(self.update_all_screens, 0.5) # Slight delay
         return MainScreen()
 
     def update_all_screens(self, *args):
