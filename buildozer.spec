@@ -15,7 +15,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
 # (str) Application versioning
-version = 0.5
+version = 0.7
 
 # (list) Application requirements
 # We only need kivy now, as this version is offline.
