@@ -15,10 +15,10 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
 # (str) Application versioning
-version = 0.3
+version = 0.5
 
 # (list) Application requirements
-# We only need kivy now, since we are offline.
+# We only need kivy now, as this version is offline.
 requirements = python3,kivy
 
 # (str) Supported orientation
