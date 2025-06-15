@@ -19,7 +19,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1.2.1
+        uses: ArtemSBulgakov/buildozer-action@v1
         id: buildozer
         with:
           command: buildozer -v android debug
