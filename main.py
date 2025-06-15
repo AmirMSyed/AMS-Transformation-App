@@ -10,27 +10,13 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.screenmanager import ScreenManager, Screen
-from kivy.uix.popup import Popup
 from kivy.uix.modalview import ModalView
 from kivy.lang import Builder
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
 
-# Firebase Integration
-# NOTE: This uses the Python Firebase Admin SDK.
-# It requires a service account key to run.
-# The GitHub Actions workflow will handle this.
-try:
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-except ImportError:
-    # This is a fallback for local testing without firebase
-    firebase_admin = None
-    print("WARNING: firebase_admin library not found. App will run in mock mode.")
-
-
-# --- App Data (Mirrors the React App's data) ---
+# --- App Data (This is now the app's permanent offline database) ---
 
 MONTHLY_PLAN_DATA = [
   { 'month': 1, 'calories': 2230, 'protein': 205, 'phase': 1, 'neat': '7,000-8,000 steps' },
@@ -62,18 +48,14 @@ def get_today_string():
 
 def get_week_number(start_date):
     if not start_date: return 1
-    # Ensure start_date is timezone-naive for comparison
     if start_date.tzinfo:
         start_date = start_date.replace(tzinfo=None)
     diff = datetime.now() - start_date
     week = (diff.days // 7) + 1
-    return max(1, week) # Ensure week is at least 1
+    return max(1, week)
 
 
 # --- Kivy Screen Definitions using Builder ---
-# This is a string that defines the layout of all screens in a Kivy-specific language.
-# It makes the Python code cleaner by separating layout from logic.
-
 KIVY_LAYOUT_STRING = """
 <MainScreen>:
     BoxLayout:
@@ -118,20 +100,16 @@ KIVY_LAYOUT_STRING = """
             height: self.minimum_height
             padding: dp(10)
             spacing: dp(10)
-
             Label:
                 text: 'AMS Transformation Dashboard'
                 font_size: '24sp'
                 size_hint_y: None
                 height: dp(40)
-
             GridLayout:
                 cols: 2
                 spacing: dp(10)
                 size_hint_y: None
                 height: self.minimum_height
-
-                # Dashboard Widgets will be added here from Python code
                 id: dashboard_grid
 
 <WorkoutScreen>:
@@ -162,9 +140,42 @@ KIVY_LAYOUT_STRING = """
             font_size: '24sp'
             size_hint_y: None
             height: dp(40)
-        # More nutrition widgets would go here
-        Label:
-            text: 'Nutrition logging coming soon!'
+        
+        GridLayout:
+            cols: 1
+            size_hint_y: None
+            height: dp(180) # Increased height for inputs and button
+            spacing: dp(10)
+            padding: dp(10)
+            
+            TextInput:
+                id: meal_name_input
+                hint_text: 'Meal Name'
+                multiline: False
+                
+            TextInput:
+                id: calories_input
+                hint_text: 'Calories'
+                input_filter: 'int'
+                multiline: False
+
+            TextInput:
+                id: protein_input
+                hint_text: 'Protein (g)'
+                input_filter: 'int'
+                multiline: False
+            
+            Button:
+                text: 'Log Meal'
+                on_release: app.log_meal()
+
+        ScrollView:
+            GridLayout:
+                id: meal_list
+                cols: 1
+                size_hint_y: None
+                height: self.minimum_height
+                spacing: dp(5)
 
 <SettingsScreen>:
     BoxLayout:
@@ -179,7 +190,11 @@ KIVY_LAYOUT_STRING = """
         GridLayout:
             cols: 1
             id: settings_grid
-            # Settings info will be added here
+            spacing: dp(10)
+            Label:
+                text: 'This is an offline version of the app.'
+            Label:
+                text: 'User data is for demonstration only.'
 
 <WorkoutPopup>:
     title: "Workout Details"
@@ -194,6 +209,7 @@ KIVY_LAYOUT_STRING = """
                 size_hint_y: None
                 height: self.texture_size[1]
                 text_size: self.width, None
+                markup: True
         Button:
             text: 'Close'
             size_hint_y: None
@@ -210,22 +226,18 @@ class MainScreen(BoxLayout):
 
 class DashboardScreen(Screen):
     def on_enter(self, *args):
-        # This method is called every time the screen is shown
-        app = App.get_running_app()
-        app.update_dashboard()
+        App.get_running_app().update_dashboard()
 
 class WorkoutScreen(Screen):
     def on_enter(self, *args):
-        app = App.get_running_app()
-        app.update_workout_plan()
+        App.get_running_app().update_workout_plan()
 
 class NutritionScreen(Screen):
-    pass
+    def on_enter(self, *args):
+        App.get_running_app().update_meal_list()
 
 class SettingsScreen(Screen):
-    def on_enter(self, *args):
-        app = App.get_running_app()
-        app.update_settings()
+    pass
 
 class WorkoutPopup(ModalView):
     pass
@@ -235,117 +247,57 @@ class WorkoutPopup(ModalView):
 class FitnessApp(App):
 
     def build(self):
-        self.db = None
-        self.user_id = "user_01" # Hardcoded for simplicity
-        self.profile_data = {}
-        self.daily_data = {}
+        # Offline data store
+        self.profile_data = {
+            'startDate': datetime.now() - timedelta(days=30),
+            'startWeight': 304,
+            'goalWeight': 235
+        }
+        self.meals_today = []
         
-        # This is the Kivy way of setting colors and styles
-        Window.clearcolor = (0.15, 0.15, 0.15, 1) # Dark gray background
+        Window.clearcolor = (0.15, 0.15, 0.15, 1)
         
-        # Initialize Firebase if the library is available
-        if firebase_admin:
-            try:
-                # IMPORTANT: The serviceAccountKey.json must be present for this to work.
-                # In the GitHub Actions workflow, this will be provided via a secret.
-                cred_path = 'serviceAccountKey.json'
-                if os.path.exists(cred_path):
-                    cred = credentials.Certificate(cred_path)
-                    firebase_admin.initialize_app(cred)
-                    self.db = firestore.client()
-                    print("Firebase initialized successfully.")
-                else:
-                    print(f"WARNING: '{cred_path}' not found. Firebase will not be used.")
-            except Exception as e:
-                print(f"ERROR: Could not initialize Firebase: {e}")
-        
-        # Load data from Firebase when the app starts
-        Clock.schedule_once(self.load_initial_data, 1)
-
+        Clock.schedule_once(self.update_all_screens, 0)
         return MainScreen()
 
-    def load_initial_data(self, *args):
-        """Fetches the user's profile and daily data from Firestore."""
-        if not self.db:
-            print("Running in mock mode. No data will be fetched.")
-            self.profile_data = {
-                'startDate': datetime.now() - timedelta(days=14),
-                'startWeight': 304,
-                'goalWeight': 235
-            }
-            self.daily_data = {
-                get_today_string(): {'calories': 1200, 'protein': 150}
-            }
-            self.update_all_screens()
-            return
-
-        try:
-            # Fetch profile
-            profile_ref = self.db.collection('users').document(self.user_id).collection('profile').document('main')
-            profile_doc = profile_ref.get()
-            if profile_doc.exists:
-                self.profile_data = profile_doc.to_dict()
-                print("Profile data loaded.")
-            else:
-                print("No profile found. Creating a default one.")
-                # Create a default profile if one doesn't exist
-                self.profile_data = {
-                    'startDate': datetime.now(),
-                    'startWeight': 304.0,
-                    'goalWeight': 235.0
-                }
-                profile_ref.set(self.profile_data)
-
-            # Fetch all daily data documents
-            daily_ref = self.db.collection('users').document(self.user_id).collection('dailyData').stream()
-            self.daily_data = {doc.id: doc.to_dict() for doc in daily_ref}
-            print(f"Loaded {len(self.daily_data)} daily data entries.")
-            
-            # Update all screens with the new data
-            self.update_all_screens()
-
-        except Exception as e:
-            print(f"Error loading initial data from Firebase: {e}")
-
-    def update_all_screens(self):
-        """Calls the update method for each screen."""
+    def update_all_screens(self, *args):
         self.update_dashboard()
         self.update_workout_plan()
-        self.update_settings()
+        self.update_meal_list()
 
     def create_info_card(self, title, value):
-        """Helper function to create a consistent looking card widget."""
-        card = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(100), padding=dp(10))
+        card = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(100), padding=dp(10),
+                         canvas_before=[Builder.load_string('''
+Color:
+    rgba: .2, .2, .2, 1
+RoundedRectangle:
+    pos: self.pos
+    size: self.size
+    radius: [dp(10)]
+''')])
         card.add_widget(Label(text=title, color=(0.7, 0.7, 0.7, 1), font_size='16sp'))
         card.add_widget(Label(text=str(value), bold=True, font_size='22sp'))
         return card
 
     def update_dashboard(self):
-        """Populates the dashboard screen with current data."""
         grid = self.root.ids.sm.get_screen('dashboard').ids.dashboard_grid
         grid.clear_widgets()
 
-        if not self.profile_data:
-            grid.add_widget(Label(text="Loading profile..."))
-            return
-
         current_week = get_week_number(self.profile_data.get('startDate'))
-        plan = MONTHLY_PLAN_DATA[min(current_week // 4, len(MONTHLY_PLAN_DATA) - 1)]
-        today_data = self.daily_data.get(get_today_string(), {})
+        plan_index = min(current_week // 4, len(MONTHLY_PLAN_DATA) - 1)
+        plan = MONTHLY_PLAN_DATA[plan_index]
+        
+        total_calories = sum(meal['calories'] for meal in self.meals_today)
+        total_protein = sum(meal['protein'] for meal in self.meals_today)
 
         grid.add_widget(self.create_info_card("Current Week", current_week))
         grid.add_widget(self.create_info_card("Current Phase", plan['phase']))
         grid.add_widget(self.create_info_card("Calorie Target", f"{plan['calories']} kcal"))
         grid.add_widget(self.create_info_card("Protein Target", f"{plan['protein']} g"))
-        
-        calories_today = today_data.get('calories', 0)
-        protein_today = today_data.get('protein', 0)
-        
-        grid.add_widget(self.create_info_card("Calories Logged", calories_today))
-        grid.add_widget(self.create_info_card("Protein Logged", protein_today))
+        grid.add_widget(self.create_info_card("Calories Logged", total_calories))
+        grid.add_widget(self.create_info_card("Protein Logged", total_protein))
 
     def update_workout_plan(self):
-        """Populates the workout screen with the weekly schedule."""
         grid = self.root.ids.sm.get_screen('workout').ids.workout_grid
         grid.clear_widgets()
         
@@ -355,12 +307,11 @@ class FitnessApp(App):
             day_card = BoxLayout(padding=dp(10), size_hint_y=None, height=dp(80))
             
             info_layout = BoxLayout(orientation='vertical')
-            info_layout.add_widget(Label(text=day_info['day'], font_size='18sp', bold=True, halign='left'))
-            info_layout.add_widget(Label(text=day_info['type'], color=(0.8, 0.8, 0.8, 1), halign='left'))
+            info_layout.add_widget(Label(text=day_info['day'], font_size='18sp', bold=True, halign='left', text_size=(Window.width * 0.5, None)))
+            info_layout.add_widget(Label(text=day_info['type'], color=(0.8, 0.8, 0.8, 1), halign='left', text_size=(Window.width * 0.5, None)))
             
             day_card.add_widget(info_layout)
             
-            # Pass the full workout info to the popup function
             btn = Button(text='View', size_hint_x=0.3)
             btn.bind(on_release=lambda x, workout=day_workout: self.show_workout_popup(workout))
             day_card.add_widget(btn)
@@ -368,41 +319,64 @@ class FitnessApp(App):
             grid.add_widget(day_card)
 
     def show_workout_popup(self, workout_info):
-        """Displays a popup with details of the selected workout."""
         popup = WorkoutPopup()
-        details_text = f"[b]{workout_info.get('type', 'N/A')}[/b]\n\n"
+        details_text = f"[b]{workout_info.get('type', 'N/A')}[/b]\\n\\n"
         
         if workout_info.get('type') == 'Strength':
-            details_text += f"Reps in Reserve (RIR): {workout_info.get('rir', 'N/A')}\n\n"
+            details_text += f"Reps in Reserve (RIR): {workout_info.get('rir', 'N/A')}\\n\\n"
             for exercise in workout_info.get('exercises', []):
-                details_text += f"- {exercise['name']}: {exercise['sets']} sets of {exercise['reps']} reps\n"
+                details_text += f"- {exercise['name']}: {exercise['sets']} sets of {exercise['reps']} reps\\n"
         else:
             details_text += workout_info.get('details', 'No details available.')
         
         popup.ids.workout_details_label.text = details_text
         popup.open()
 
-    def update_settings(self):
-        """Populates the settings screen with profile information."""
-        grid = self.root.ids.sm.get_screen('settings').ids.settings_grid
-        grid.clear_widgets()
+    def log_meal(self):
+        nutrition_screen = self.root.ids.sm.get_screen('nutrition')
+        meal_name = nutrition_screen.ids.meal_name_input.text
+        calories = nutrition_screen.ids.calories_input.text
+        protein = nutrition_screen.ids.protein_input.text
 
-        if not self.profile_data:
-            grid.add_widget(Label(text="Loading profile..."))
+        if not meal_name or not calories or not protein:
+            # Simple validation feedback
+            print("Please fill out all meal fields.")
             return
+
+        try:
+            self.meals_today.append({
+                'name': meal_name,
+                'calories': int(calories),
+                'protein': int(protein)
+            })
             
-        start_date = self.profile_data.get('startDate')
-        if hasattr(start_date, 'strftime'):
-             start_date_str = start_date.strftime('%Y-%m-%d')
-        else:
-            # Handle case where date might be a string already
-            start_date_str = str(start_date)
+            # Clear inputs
+            nutrition_screen.ids.meal_name_input.text = ''
+            nutrition_screen.ids.calories_input.text = ''
+            nutrition_screen.ids.protein_input.text = ''
+            
+            # Update UI
+            self.update_meal_list()
+            self.update_dashboard()
 
-        grid.add_widget(Label(text=f"User ID: {self.user_id}"))
-        grid.add_widget(Label(text=f"Start Date: {start_date_str}"))
-        grid.add_widget(Label(text=f"Start Weight: {self.profile_data.get('startWeight')} lbs"))
-        grid.add_widget(Label(text=f"Goal Weight: {self.profile_data.get('goalWeight')} lbs"))
+        except ValueError:
+            print("Calories and Protein must be numbers.")
 
+    def update_meal_list(self):
+        meal_list_grid = self.root.ids.sm.get_screen('nutrition').ids.meal_list
+        meal_list_grid.clear_widgets()
+
+        if not self.meals_today:
+            meal_list_grid.add_widget(Label(text="No meals logged for today.", size_hint_y=None, height=dp(50)))
+            return
+
+        for meal in self.meals_today:
+            meal_label = Label(
+                text=f"{meal['name']}: {meal['calories']} kcal, {meal['protein']}g protein",
+                size_hint_y=None,
+                height=dp(40)
+            )
+            meal_list_grid.add_widget(meal_label)
 
 if __name__ == '__main__':
     FitnessApp().run()
